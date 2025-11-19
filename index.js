@@ -535,7 +535,8 @@ app.patch('/comics/:id', async (req, res) => {
 
     const updatableFields = [
       'title','issue','type','year','publisher','condition','grade','key',
-      'description','short','characters','writer','artist','value','slabbed','isbn','qty','volume'
+      'description','short','characters','writer','artist','value','slabbed','isbn','qty','volume',
+      'plot', 'variant', 'coverArtist'
     ];
 
     let changed = false;
@@ -567,7 +568,8 @@ app.patch('/comics/:id/image', upload.single('image'), async (req, res) => {
 
     const updatableFields = [
       'title','issue','type','year','publisher','condition','grade','key',
-      'description','short','characters','writer','artist','value','slabbed','isbn','qty','volume'
+      'description','short','characters','writer','artist','value','slabbed','isbn','qty','volume',
+      'plot', 'variant', 'coverArtist'
     ];
     for (const field of updatableFields) {
       if (req.body[field] !== undefined) comic[field] = req.body[field];
