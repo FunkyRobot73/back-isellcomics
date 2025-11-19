@@ -41,7 +41,7 @@ jobs:
           password: ${{ secrets.BACK_FTP_PASSWORD }}
           local-dir: ./deploy/
           # 👇 adjust this to the correct path for the backend on your FTP account
-          server-dir: /back.isellcomics.ca/
+          server-dir: /
           dangerous-clean-slate: true
           exclude: |
             **/.git*
