@@ -38,7 +38,7 @@ jobs:
 
           # This should point to your backend folder on the server,
           # e.g. if your FTP root == /home/hamilton then this is /home/hamilton/back.isellcomics.ca
-          server-dir: back.isellcomics.ca/
+          server-dir: /
 
           # 🔴 IMPORTANT: do NOT wipe the server dir, we want node_modules/.env to survive
           dangerous-clean-slate: false
