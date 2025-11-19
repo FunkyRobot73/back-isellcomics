@@ -346,117 +346,106 @@ app.get('/comics/:id/clz-plot', async (req, res) => {
 });
 
 // POST /comics/:id/ai-plot – generate 50–60 word plot using CLZ/description
-app.post('/comics/:id/ai-plot', async (req, res) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) return res.status(400).json({ error: 'Invalid comic ID' });
-
-    const { useClzIfEmpty = true, overwrite = false } = req.body || {};
-
-    const comic = await Comic.findByPk(id);
-    if (!comic) {
-      return res.status(404).json({ error: 'Comic not found' });
-    }
-
-    // 1) existing comic.plot
-    // 2) CLZ story
-    // 3) description / short
-    let sourcePlot = comic.plot || '';
-
-    if (!sourcePlot || overwrite) {
-      let clzStory = '';
-
-      if (useClzIfEmpty) {
-        const issue = comic.issue || '';
-        const year  = comic.year  || '';
-        const pub   = normPub(comic.publisher);
-
-        if (issue && year && pub) {
-          const candidates = await ClzComic.findAll({
-            where: { issue, year },
-            limit: 20,
-          });
-
-          let best = null;
-          let bestScore = -1;
-
-          for (const cand of candidates) {
-            const candPub = normPub(cand.publisher);
-            let score = 0;
-
-            if (candPub === pub) score += 3;
-            if (candPub.includes(pub) || pub.includes(candPub)) score += 2;
-
-            const cTitle  = (cand.title || '').toLowerCase();
-            const myTitle = (comic.title || '').toLowerCase();
-            if (cTitle && myTitle && (cTitle.includes(myTitle) || myTitle.includes(cTitle))) {
-              score += 1;
-            }
-
-            if (score > bestScore) {
-              bestScore = score;
-              best = cand;
-            }
-          }
-
-          if (best && best.story) {
-            clzStory = best.story;
-          }
-        }
+// --- SAFE AI REQUEST WITH RETRY ------------------------------------
+async function safeOpenAIRequest(client, requestOptions, maxRetries = 3) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await client.responses.create(requestOptions);
+    } catch (err) {
+      // Handle OpenAI 429 (rate limit)
+      if (err.status === 429) {
+        const waitMs = 1500 * (attempt + 1);
+        console.log(`Rate limit hit. Retry ${attempt + 1}/${maxRetries} in ${waitMs}ms`);
+        await new Promise(res => setTimeout(res, waitMs));
+        continue; // retry
       }
 
-      sourcePlot = sourcePlot || clzStory || comic.description || comic.short || '';
+      // Handle temporary network hiccups
+      if (err.status >= 500) {
+        const waitMs = 1000 * (attempt + 1);
+        console.log(`Server error from OpenAI. Retry in ${waitMs}ms`);
+        await new Promise(res => setTimeout(res, waitMs));
+        continue;
+      }
+
+      // Some other error → stop immediately
+      throw err;
+    }
+  }
+
+  throw new Error("OpenAI request failed after retries.");
+}
+
+// -------------------------------------------------------------------
+//  AI PLOT ROUTE                                                     |
+// -------------------------------------------------------------------
+app.post("/comics/:id/ai-plot", async (req, res) => {
+  const comicId = req.params.id;
+
+  try {
+    // 1. Load comic from DB
+    const comic = await Comicbook.findByPk(comicId);
+    if (!comic) {
+      return res.status(404).json({ error: "Comic not found" });
     }
 
-    if (!sourcePlot) {
-      return res.status(400).json({ error: 'No source text available to generate plot' });
-    }
-
+    // 2. Build the AI prompt
     const prompt = `
-You help a comic shop write short plot blurbs for product listings.
+Write a short plot summary for this comic book:
 
-Write a clear, engaging plot summary in 50–60 words.
-It should read like a back-cover blurb, not a review.
-Avoid hard spoilers beyond the main setup.
+Title: ${comic.title}
+Issue: ${comic.issue}
+Year: ${comic.year}
+Publisher: ${comic.publisher}
+Characters: ${comic.characters}
+Writer: ${comic.writer}
+Artist: ${comic.artist}
+Key info: ${comic.key}
+Description: ${comic.description}
 
-Comic details:
-- Title: ${comic.title || 'Unknown'}
-- Issue: ${comic.issue || 'n/a'}
-- Year: ${comic.year || 'n/a'}
-- Publisher: ${comic.publisher || 'n/a'}
-- Characters: ${comic.characters || 'n/a'}
-- Key notes: ${comic.key || 'none'}
+Write in 2–4 sentences, clear and simple.
+    `.trim();
 
-Source text from CLZ/database (clean this up and condense it):
-${sourcePlot}
-`;
-
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: 'You write concise, accurate comic book plot summaries.' },
-        { role: 'user', content: prompt },
-      ],
-      temperature: 0.5,
-      max_tokens: 180,
+    // 3. SAFE OpenAI request (with retry logic)
+    const aiRes = await safeOpenAIRequest(openaiClient, {
+      model: "gpt-4o-mini",
+      input: prompt
     });
 
-    const plot = completion.choices?.[0]?.message?.content?.trim() || '';
+    // Extract plot text (varies slightly by SDK version)
+    const plot = aiRes.output_text || aiRes.output_text?.[0] || aiRes?.data || "";
 
     if (!plot) {
-      return res.status(500).json({ error: 'AI did not return a plot' });
+      return res.status(500).json({ error: "AI returned empty response" });
     }
 
-    // save into comicbooks.plot (make sure your Comic model has a "plot" field)
-    comic.plot = plot;
+    // 4. Save to DB
+    comic.plot = plot.trim();
     await comic.save();
 
-    res.json({ plot });
+    // 5. Return updated result
+    res.json({
+      id: comicId,
+      plot: comic.plot,
+      status: "updated"
+    });
+
   } catch (err) {
-    console.error('POST /comics/:id/ai-plot error:', err);
-    res.status(500).json({ error: 'AI plot generation failed' });
+    console.error("POST /comics/:id/ai-plot error:", err);
+
+    if (err.status === 429) {
+      return res.status(429).json({
+        error: "OpenAI rate limit exceeded. Try again in a minute."
+      });
+    }
+
+    res.status(500).json({
+      error: "AI plot generation failed",
+      details: err.message
+    });
   }
 });
+
 
 /* --------------------------------------------------------------------------- */
 
