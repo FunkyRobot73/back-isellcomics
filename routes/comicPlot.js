@@ -3,7 +3,7 @@ const express = require('express');
 const router = express.Router();
 const OpenAI = require('openai');
 
-const Comicbook = require('../models/Comicbook'); // your existing model
+const Comicbook = require('../models/comic'); // your existing model
 const ClzComic = require('../models/ClzComic');
 
 const openai = new OpenAI({
