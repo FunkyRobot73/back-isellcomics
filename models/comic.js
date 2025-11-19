@@ -60,6 +60,19 @@ const Comic = config.define('comicbook', {
         type: Sequelize.STRING,
         allowNull: true
     },
+    plot: {
+        type: Sequelize.TEXT,
+        allowNull: true
+    },
+    variant: {
+        type: Sequelize.STRING,
+        allowNull: true
+    },
+    coverArtist: {
+        type: Sequelize.STRING,
+        allowNull: true
+    },
+
     value: {
         type: Sequelize.INTEGER,
     },
@@ -83,8 +96,9 @@ const Comic = config.define('comicbook', {
         allowNull: true
     },
 
-},
-{timestamps: true, updatedAt: true}
-);
+}, {
+    timestamps: true,
+    updatedAt: true
+});
 
 module.exports = Comic;
