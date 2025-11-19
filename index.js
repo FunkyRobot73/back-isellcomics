@@ -141,7 +141,6 @@ app.use('/public', express.static(path.join(__dirname, 'public'), {
 app.get('/health', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
 app.get('/booster', (_req, res) => res.send('Hello Booster Gold'));
-app.get('/jli', (_req, res) => res.send('Hello Justice League International'));
 
 app.get('/test-uuid', (_req, res) => res.send(uuidv4()));
 
