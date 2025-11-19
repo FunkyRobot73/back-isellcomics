@@ -6,6 +6,7 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const compression = require('compression');
 const nodemailer = require('nodemailer');
+const OpenAI = require('openai');  
 
 const config = require('./config');
 const Comic = require('./models/comic');
@@ -17,10 +18,27 @@ const Cart = require('./models/cart');
 const CartItem = require('./models/cartItem');
 const Order = require('./models/order');
 const OrderItem = require('./models/orderItem');
-const aiRoutes = require('./routes/ai');
-const comicPlotRoutes = require('./routes/comicPlot');
+const ClzComic = require('./models/ClzComic');
+// const aiRoutes = require('./routes/ai');
+// const comicPlotRoutes = require('./routes/comicPlot');
 
 const app = express();
+
+// OpenAI client (make sure OPENAI_API_KEY is set in Node app env)
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+// simple publisher normalizer used for matching CLZ records
+function normPub(p) {
+  return (p || '')
+    .toLowerCase()
+    .replace(/comics?/g, '')
+    .replace(/entertainment/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
 
 /* ----------------------------- Email transport ------------------------------ */
 
@@ -138,9 +156,9 @@ app.use('/public', express.static(path.join(__dirname, 'public'), {
   immutable: true
 }));
 
-app.use('/comic-plots', comicPlotRoutes);
+// app.use('/comic-plots', comicPlotRoutes);
  // note: mounts /comics/:id/clz-plot and /comics/:id/ai-plot
- app.use('/ai', aiRoutes);
+// app.use('/ai', aiRoutes);
 
 /* --------------------------------- Health/Test ------------------------------ */
 
@@ -257,6 +275,190 @@ app.get('/comic/:id', async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 });
+
+/* --------- NEW: CLZ plot lookup & AI plot generation routes --------- */
+
+// GET /comics/:id/clz-plot – pull raw plot from CLZ table
+app.get('/comics/:id/clz-plot', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid comic ID' });
+
+    const comic = await Comic.findByPk(id);
+    if (!comic) {
+      return res.status(404).json({ error: 'Comic not found' });
+    }
+
+    const issue = comic.issue || '';
+    const year  = comic.year  || '';
+    const pub   = normPub(comic.publisher);
+
+    if (!issue || !year || !pub) {
+      return res.status(404).json({ error: 'Not enough data to match CLZ record' });
+    }
+
+    // candidates with same issue+year
+    const candidates = await ClzComic.findAll({
+      where: { issue, year },
+      limit: 20,
+    });
+
+    if (!candidates.length) {
+      return res.status(404).json({ error: 'No CLZ candidates found' });
+    }
+
+    let best = null;
+    let bestScore = -1;
+
+    for (const cand of candidates) {
+      const candPub = normPub(cand.publisher);
+      let score = 0;
+
+      if (candPub === pub) score += 3;
+      if (candPub.includes(pub) || pub.includes(candPub)) score += 2;
+
+      const cTitle  = (cand.title || '').toLowerCase();
+      const myTitle = (comic.title || '').toLowerCase();
+      if (cTitle && myTitle && (cTitle.includes(myTitle) || myTitle.includes(cTitle))) {
+        score += 1;
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = cand;
+      }
+    }
+
+    if (!best || !best.story) {
+      return res.status(404).json({ error: 'No CLZ story / plot found for this comic' });
+    }
+
+    res.json({
+      plot: best.story,
+      clzTitle: best.title,
+      clzPublisher: best.publisher,
+      clzYear: best.year,
+    });
+  } catch (err) {
+    console.error('GET /comics/:id/clz-plot error:', err);
+    res.status(500).json({ error: 'CLZ plot lookup failed' });
+  }
+});
+
+// POST /comics/:id/ai-plot – generate 50–60 word plot using CLZ/description
+app.post('/comics/:id/ai-plot', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid comic ID' });
+
+    const { useClzIfEmpty = true, overwrite = false } = req.body || {};
+
+    const comic = await Comic.findByPk(id);
+    if (!comic) {
+      return res.status(404).json({ error: 'Comic not found' });
+    }
+
+    // 1) existing comic.plot
+    // 2) CLZ story
+    // 3) description / short
+    let sourcePlot = comic.plot || '';
+
+    if (!sourcePlot || overwrite) {
+      let clzStory = '';
+
+      if (useClzIfEmpty) {
+        const issue = comic.issue || '';
+        const year  = comic.year  || '';
+        const pub   = normPub(comic.publisher);
+
+        if (issue && year && pub) {
+          const candidates = await ClzComic.findAll({
+            where: { issue, year },
+            limit: 20,
+          });
+
+          let best = null;
+          let bestScore = -1;
+
+          for (const cand of candidates) {
+            const candPub = normPub(cand.publisher);
+            let score = 0;
+
+            if (candPub === pub) score += 3;
+            if (candPub.includes(pub) || pub.includes(candPub)) score += 2;
+
+            const cTitle  = (cand.title || '').toLowerCase();
+            const myTitle = (comic.title || '').toLowerCase();
+            if (cTitle && myTitle && (cTitle.includes(myTitle) || myTitle.includes(cTitle))) {
+              score += 1;
+            }
+
+            if (score > bestScore) {
+              bestScore = score;
+              best = cand;
+            }
+          }
+
+          if (best && best.story) {
+            clzStory = best.story;
+          }
+        }
+      }
+
+      sourcePlot = sourcePlot || clzStory || comic.description || comic.short || '';
+    }
+
+    if (!sourcePlot) {
+      return res.status(400).json({ error: 'No source text available to generate plot' });
+    }
+
+    const prompt = `
+You help a comic shop write short plot blurbs for product listings.
+
+Write a clear, engaging plot summary in 50–60 words.
+It should read like a back-cover blurb, not a review.
+Avoid hard spoilers beyond the main setup.
+
+Comic details:
+- Title: ${comic.title || 'Unknown'}
+- Issue: ${comic.issue || 'n/a'}
+- Year: ${comic.year || 'n/a'}
+- Publisher: ${comic.publisher || 'n/a'}
+- Characters: ${comic.characters || 'n/a'}
+- Key notes: ${comic.key || 'none'}
+
+Source text from CLZ/database (clean this up and condense it):
+${sourcePlot}
+`;
+
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: 'You write concise, accurate comic book plot summaries.' },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0.5,
+      max_tokens: 180,
+    });
+
+    const plot = completion.choices?.[0]?.message?.content?.trim() || '';
+
+    if (!plot) {
+      return res.status(500).json({ error: 'AI did not return a plot' });
+    }
+
+    // save into comicbooks.plot (make sure your Comic model has a "plot" field)
+    comic.plot = plot;
+    await comic.save();
+
+    res.json({ plot });
+  } catch (err) {
+    console.error('POST /comics/:id/ai-plot error:', err);
+    res.status(500).json({ error: 'AI plot generation failed' });
+  }
+});
+
+/* --------------------------------------------------------------------------- */
 
 // Comics by publisher
 app.get('/comics/publisher/:name', async (req, res) => {
