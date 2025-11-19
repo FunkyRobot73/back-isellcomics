@@ -1,0 +1,53 @@
+name: Deploy back.isellcomics.ca (Node API) to cPanel
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout your code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Optional: install deps & run tests just to catch obvious breakage
+      - name: Install dependencies
+        run: npm ci
+
+      # - name: Run tests
+      #   run: npm test
+
+      # Step 2: Prepare deploy folder (strip stuff we don't want)
+      - name: Prepare deploy package
+        run: |
+          mkdir deploy
+          rsync -av \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='node_modules' \
+            --exclude='.env' \
+            --exclude='deploy' \
+            ./ ./deploy
+
+      # Step 3: Deploy to cPanel via FTP
+      - name: Deploy to cPanel (Node backend)
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.4
+        with:
+          server: ${{ secrets.BACK_FTP_SERVER }}
+          username: ${{ secrets.BACK_FTP_USERNAME }}
+          password: ${{ secrets.BACK_FTP_PASSWORD }}
+          local-dir: ./deploy/
+          # 👇 adjust this to the correct path for the backend on your FTP account
+          server-dir: /back.isellcomics.ca/
+          dangerous-clean-slate: true
+          exclude: |
+            **/.git*
+            **/.github/**
+            **/node_modules/**
+            **/.env
+            **/.env.*
+            **/deploy/**
+            **/deploy-back-isellcomics.sh

@@ -6,6 +6,7 @@ yarn-error.log*
 
 # Env / secrets
 .env
+deploy-back-isellcomics.sh
 
 # Misc
 .DS_Store
