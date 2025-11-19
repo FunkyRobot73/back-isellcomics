@@ -1,45 +1,26 @@
-// config.js (back.isellcomics.ca) – simple version without dotenv
+// config.js  (back.isellcomics.ca)
+require('dotenv').config();
+const Sequelize = require("sequelize");
 
 const environment = process.env.NODE_ENV || "development";
 
-let host;
-let database;
-let username;
-let password;
-let type;
-let port;
-
-if (environment === 'production') {
-  host = 'localhost';
-
-  database = 'hamilton_comics';
-  username = 'hamilton_carlos';
-  password = 'funky2gogo!';
-
-  type = 'mariadb';
-  port = 3306;
-
-} else {
-  host = 'localhost';
-
-  database = 'hamilton_comics';
-  username = 'hamilton_carlos';
-  password = 'funky2gogo!';
-
-  type = 'mariadb';
-  port = 3306;
-}
-
-const Sequelize = require("sequelize");
+const database  = process.env.DB_NAME   || 'hamilton_comics';
+const username  = process.env.DB_USER   || 'hamilton_carlos';
+const password  = process.env.DB_PASS   || '';
+const host      = process.env.DB_HOST   || 'localhost';
+const type      = 'mariadb';
+const port      = Number(process.env.DB_PORT) || 3306;
 
 const databaseOptions = {
   dialect: type,
-  host: host
+  host,
+  port,
 };
 
-if (environment === 'production') {
+// If you really need socketPath in production:
+if (environment === 'production' && process.env.DB_SOCKET) {
   databaseOptions.dialectOptions = {
-    socketPath: host,
+    socketPath: process.env.DB_SOCKET,
   };
 }
 
