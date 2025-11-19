@@ -510,7 +510,10 @@ app.post('/addcomics', upload.single('image'), async (req, res) => {
       slabbed: req.body.slabbed,
       isbn: req.body.isbn,
       qty: req.body.qty,
-      volume: req.body.volume
+      volume: req.body.volume,
+      plot: req.body.plot,
+      variant: req.body.variant,
+      coverArtist: req.body.coverArtist
     };
 
     const result = await Comic.create(new_comic);
