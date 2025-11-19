@@ -13,19 +13,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 2: Prepare a tiny deploy folder with ONLY the files we usually change
-      - name: Prepare deploy package
-        run: |
-          rm -rf deploy
-          mkdir -p deploy/models
-          # core files
-          cp index.js deploy/
-          cp config.js deploy/
-          cp package.json deploy/  # optional, but harmless
-          # models folder
-          cp -r models/ deploy/models/
-
-      # Step 3: Deploy to cPanel via FTP (NO clean slate)
+      # Step 2: Deploy to cPanel via FTP DIRECTLY from repo root
       - name: Deploy to cPanel (Node backend)
         uses: SamKirkland/FTP-Deploy-Action@v4.3.4
         with:
@@ -33,21 +21,24 @@ jobs:
           username: ${{ secrets.BACK_FTP_USERNAME }}
           password: ${{ secrets.BACK_FTP_PASSWORD }}
 
-          # Only ship the small deploy folder
-          local-dir: ./deploy/
+          # 🚩 No deploy folder. Use repo root as the source.
+          local-dir: ./
 
-          # This should point to your backend folder on the server,
-          # e.g. if your FTP root == /home/hamilton then this is /home/hamilton/back.isellcomics.ca
+          # This is the backend folder on the server (relative to FTP root)
+          # Example: if FTP root == /home/hamilton then this is /home/hamilton/back.isellcomics.ca
           server-dir: /
 
-          # 🔴 IMPORTANT: do NOT wipe the server dir, we want node_modules/.env to survive
+          # ❗ Do NOT wipe the folder – keep node_modules and .env
           dangerous-clean-slate: false
 
-          # Extra safety: ignore junk
+          # Skip junk we never want uploaded
           exclude: |
             **/.git*
             **/.github/**
             **/node_modules/**
             **/.env
             **/.env.*
-            **/deploy/**
+            **/npm-debug.log*
+            **/yarn.lock
+            **/package-lock.json
+            **/README.md
