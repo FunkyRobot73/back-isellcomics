@@ -17,6 +17,7 @@ const Cart = require('./models/cart');
 const CartItem = require('./models/cartItem');
 const Order = require('./models/order');
 const OrderItem = require('./models/orderItem');
+const comicPlotRoutes = require('./routes/comicPlot');
 
 const app = express();
 
@@ -135,6 +136,9 @@ app.use('/public', express.static(path.join(__dirname, 'public'), {
   etag: true,
   immutable: true
 }));
+
+app.use('/comic-plots', comicPlotRoutes);
+ // note: mounts /comics/:id/clz-plot and /comics/:id/ai-plot
 
 /* --------------------------------- Health/Test ------------------------------ */
 
