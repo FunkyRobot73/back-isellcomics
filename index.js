@@ -157,7 +157,6 @@ app.use('/public', express.static(path.join(__dirname, 'public'), {
 }));
 
 // app.use('/comic-plots', comicPlotRoutes);
- // note: mounts /comics/:id/clz-plot and /comics/:id/ai-plot
 // app.use('/ai', aiRoutes);
 
 /* --------------------------------- Health/Test ------------------------------ */
@@ -200,7 +199,6 @@ app.get('/test-email', async (_req, res) => {
 
 /* ------------------------------ DB / Sequelize ------------------------------ */
 
-/* ------------------------------ Sequelize Setup ----------------------------- */
 config.authenticate()
   .then(() => {
     console.log('Database is connected.');
@@ -208,7 +206,6 @@ config.authenticate()
   .catch(err => {
     console.error('DB connection error:', err);
   });
-
 
 /* ------------------------------ Associations -------------------------------- */
 
@@ -252,10 +249,12 @@ const upload = multer({ storage });
 
 /* --------------------------------- Comics ----------------------------------- */
 
-// All comics
+// All comics – ONLY published comics
 app.get('/comics', async (_req, res) => {
   try {
-    const rows = await Comic.findAll();
+    const rows = await Comic.findAll({
+      where: { is_published: 1 }
+    });
     res.status(200).json(rows);
   } catch (err) {
     console.error('GET /comics error:', err);
@@ -263,7 +262,7 @@ app.get('/comics', async (_req, res) => {
   }
 });
 
-// Single comic by ID
+// Single comic by ID (can return unpublished too)
 app.get('/comic/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
@@ -276,7 +275,7 @@ app.get('/comic/:id', async (req, res) => {
   }
 });
 
-/* --------- NEW: CLZ plot lookup & AI plot generation routes --------- */
+/* --------- CLZ plot lookup & AI plot generation routes --------- */
 
 // GET /comics/:id/clz-plot – pull raw plot from CLZ table
 app.get('/comics/:id/clz-plot', async (req, res) => {
@@ -297,7 +296,6 @@ app.get('/comics/:id/clz-plot', async (req, res) => {
       return res.status(404).json({ error: 'Not enough data to match CLZ record' });
     }
 
-    // candidates with same issue+year
     const candidates = await ClzComic.findAll({
       where: { issue, year },
       limit: 20,
@@ -345,22 +343,19 @@ app.get('/comics/:id/clz-plot', async (req, res) => {
   }
 });
 
-// POST /comics/:id/ai-plot – generate 50–60 word plot using CLZ/description
-// --- SAFE AI REQUEST WITH RETRY ------------------------------------
+// SAFE AI REQUEST WITH RETRY
 async function safeOpenAIRequest(client, requestOptions, maxRetries = 3) {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       return await client.responses.create(requestOptions);
     } catch (err) {
-      // Handle OpenAI 429 (rate limit)
       if (err.status === 429) {
         const waitMs = 1500 * (attempt + 1);
         console.log(`Rate limit hit. Retry ${attempt + 1}/${maxRetries} in ${waitMs}ms`);
         await new Promise(res => setTimeout(res, waitMs));
-        continue; // retry
+        continue;
       }
 
-      // Handle temporary network hiccups
       if (err.status >= 500) {
         const waitMs = 1000 * (attempt + 1);
         console.log(`Server error from OpenAI. Retry in ${waitMs}ms`);
@@ -368,7 +363,6 @@ async function safeOpenAIRequest(client, requestOptions, maxRetries = 3) {
         continue;
       }
 
-      // Some other error → stop immediately
       throw err;
     }
   }
@@ -376,20 +370,18 @@ async function safeOpenAIRequest(client, requestOptions, maxRetries = 3) {
   throw new Error("OpenAI request failed after retries.");
 }
 
-// -------------------------------------------------------------------
-//  AI PLOT ROUTE                                                     |
-// -------------------------------------------------------------------
+// AI PLOT ROUTE (left as you had it – variable names etc.)
 app.post("/comics/:id/ai-plot", async (req, res) => {
   const comicId = req.params.id;
 
   try {
-    // 1. Load comic from DB
+    // NOTE: uses Comicbook here in your original code.
+    // Leaving this section unchanged so we don't surprise you.
     const comic = await Comicbook.findByPk(comicId);
     if (!comic) {
       return res.status(404).json({ error: "Comic not found" });
     }
 
-    // 2. Build the AI prompt
     const prompt = `
 Write a short plot summary for this comic book:
 
@@ -406,24 +398,20 @@ Description: ${comic.description}
 Write in 2–4 sentences, clear and simple.
     `.trim();
 
-    // 3. SAFE OpenAI request (with retry logic)
     const aiRes = await safeOpenAIRequest(openaiClient, {
       model: "gpt-4o-mini",
       input: prompt
     });
 
-    // Extract plot text (varies slightly by SDK version)
     const plot = aiRes.output_text || aiRes.output_text?.[0] || aiRes?.data || "";
 
     if (!plot) {
       return res.status(500).json({ error: "AI returned empty response" });
     }
 
-    // 4. Save to DB
     comic.plot = plot.trim();
     await comic.save();
 
-    // 5. Return updated result
     res.json({
       id: comicId,
       plot: comic.plot,
@@ -446,14 +434,18 @@ Write in 2–4 sentences, clear and simple.
   }
 });
 
-
 /* --------------------------------------------------------------------------- */
 
-// Comics by publisher
+// Comics by publisher – ONLY published
 app.get('/comics/publisher/:name', async (req, res) => {
   try {
     const name = req.params.name;
-    const rows = await Comic.findAll({ where: { publisher: name } });
+    const rows = await Comic.findAll({
+      where: {
+        publisher: name,
+        is_published: 1
+      }
+    });
     res.status(200).json(rows);
   } catch (err) {
     console.error('GET /comics/publisher/:name error:', err);
@@ -461,11 +453,12 @@ app.get('/comics/publisher/:name', async (req, res) => {
   }
 });
 
-// Recently updated comics
+// Recently updated comics – ONLY published
 app.get('/comics/recent-updated', async (req, res) => {
   try {
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 8, 1), 50);
     const rows = await Comic.findAll({
+      where: { is_published: 1 },
       order: [['updatedAt', 'DESC']],
       limit,
       attributes: ['id', 'title', 'issue', 'publisher', 'image', 'value', 'updatedAt']
@@ -503,6 +496,7 @@ app.post('/addcomics', upload.single('image'), async (req, res) => {
       plot: req.body.plot,
       variant: req.body.variant,
       coverArtist: req.body.coverArtist
+      // is_published will default to 0 in DB unless you set it explicitly here
     };
 
     const result = await Comic.create(new_comic);
@@ -525,7 +519,7 @@ app.patch('/comics/:id', async (req, res) => {
     const updatableFields = [
       'title','issue','type','year','publisher','condition','grade','key',
       'description','short','characters','writer','artist','value','slabbed','isbn','qty','volume',
-      'plot', 'variant', 'coverArtist'
+      'plot', 'variant', 'coverArtist', 'is_published'
     ];
 
     let changed = false;
@@ -558,7 +552,7 @@ app.patch('/comics/:id/image', upload.single('image'), async (req, res) => {
     const updatableFields = [
       'title','issue','type','year','publisher','condition','grade','key',
       'description','short','characters','writer','artist','value','slabbed','isbn','qty','volume',
-      'plot', 'variant', 'coverArtist'
+      'plot', 'variant', 'coverArtist', 'is_published'
     ];
     for (const field of updatableFields) {
       if (req.body[field] !== undefined) comic[field] = req.body[field];
@@ -959,7 +953,6 @@ app.post('/api/checkout', async (req, res) => {
     await CartItem.destroy({ where: { cart_id: cart.id } });
     await cart.destroy();
 
-    // fire-and-forget email
     sendOrderEmail(order, lineItems).catch(err => {
       console.error('Checkout: email failed but order is saved:', err);
     });
