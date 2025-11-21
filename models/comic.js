@@ -95,11 +95,7 @@ const Comic = config.define('comicbook', {
         type: Sequelize.STRING,
         allowNull: true
     },
-     is_published: {
-      type: DataTypes.BOOLEAN,
-      allowNull: false,
-      defaultValue: 0
-    },
+    
 
 }, {
     timestamps: true,

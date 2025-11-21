@@ -569,41 +569,9 @@ app.patch('/comics/:id/image', upload.single('image'), async (req, res) => {
 });
 
 // Sitemap for published comics only
-app.get('/sitemap-comics.xml', async (_req, res) => {
-  try {
-    const comics = await Comic.findAll({
-      where: { is_published: 1 },
-      attributes: ['id', 'updatedAt']
-    });
+// Dynamic sitemap for published comics only
 
-    const urls = comics.map(c => {
-      const lastMod = c.updatedAt
-        ? new Date(c.updatedAt).toISOString()
-        : new Date().toISOString();
 
-      return `
-        <url>
-          <loc>https://www.isellcomics.ca/comic/${c.id}</loc>
-          <lastmod>${lastMod}</lastmod>
-          <changefreq>weekly</changefreq>
-          <priority>0.8</priority>
-        </url>
-      `;
-    });
-
-    const xml = `<?xml version="1.0" encoding="UTF-8"?>
-      <urlset xmlns="https://www.sitemaps.org/schemas/sitemap/0.9">
-        ${urls.join('\n')}
-      </urlset>
-    `;
-
-    res.header('Content-Type', 'application/xml');
-    res.send(xml);
-  } catch (err) {
-    console.error('Sitemap error:', err);
-    res.status(500).send('Server error');
-  }
-});
 
 
 
