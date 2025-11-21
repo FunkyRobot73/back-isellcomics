@@ -262,6 +262,18 @@ app.get('/comics', async (_req, res) => {
   }
 });
 
+// Admin: ALL comics (published + unpublished)
+app.get('/comics-all', async (_req, res) => {
+  try {
+    const rows = await Comic.findAll();
+    res.status(200).json(rows);
+  } catch (err) {
+    console.error('GET /comics-all error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+
 // Single comic by ID (can return unpublished too)
 app.get('/comic/:id', async (req, res) => {
   try {
