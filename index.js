@@ -568,7 +568,8 @@ app.patch('/comics/:id/image', upload.single('image'), async (req, res) => {
   }
 });
 
-app.get('/sitemap-comics.xml', async (req, res) => {
+// Sitemap for published comics only
+app.get('/sitemap-comics.xml', async (_req, res) => {
   try {
     const comics = await Comic.findAll({
       where: { is_published: 1 },
@@ -598,12 +599,12 @@ app.get('/sitemap-comics.xml', async (req, res) => {
 
     res.header('Content-Type', 'application/xml');
     res.send(xml);
-
   } catch (err) {
     console.error('Sitemap error:', err);
     res.status(500).send('Server error');
   }
 });
+
 
 
 /* -------------------------------- Companies --------------------------------- */
