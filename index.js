@@ -119,6 +119,7 @@ async function sendOrderEmail(order, lineItems) {
   }
 }
 
+
 /* ----------------------------- CORS (allow-list) ---------------------------- */
 
 const allowedOrigins = [
