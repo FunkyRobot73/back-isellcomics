@@ -73,19 +73,33 @@ async function sendOrderEmail(order, lineItems) {
       return;
     }
 
-    const to = process.env.ORDER_NOTIFY_TO || process.env.SMTP_FROM || process.env.EMAIL_FROM;
-    if (!to) {
-      console.warn('sendOrderEmail: no ORDER_NOTIFY_TO / SMTP_FROM / EMAIL_FROM set; skipping email.');
+    const adminTo =
+      (process.env.ORDER_NOTIFY_TO || '').trim() ||
+      (process.env.SMTP_FROM || '').trim() ||
+      (process.env.EMAIL_FROM || '').trim();
+
+    const customerTo = (order.email || '').trim();
+
+    if (!adminTo && !customerTo) {
+      console.warn('sendOrderEmail: no admin or customer email configured; skipping email.');
       return;
     }
 
-    const subject = `New iSellComics Order #${order.id} - ${order.name}`;
+    const from =
+      (process.env.SMTP_FROM || '').trim() ||
+      (process.env.EMAIL_FROM || '').trim() ||
+      adminTo ||
+      customerTo;
+
+    const subjectAdmin = `New iSellComics Order #${order.id} - ${order.name}`;
+    const subjectCustomer = `Your iSellComics order #${order.id}`;
 
     const lines = lineItems.map(li =>
       `- ${li.title} #${li.issue || ''} x${li.qty} @ ${li.unit_price.toFixed(2)} ${order.currency} = ${li.line_total.toFixed(2)}`
     );
 
-    const textBody = [
+    // Body for YOU (admin)
+    const adminBody = [
       `New order received from ${order.name}`,
       '',
       `Order ID: ${order.id}`,
@@ -105,19 +119,58 @@ async function sendOrderEmail(order, lineItems) {
       'You can view this order in the database (orders / order_items tables).'
     ].join('\n');
 
-    const info = await transporter.sendMail({
-      from: process.env.SMTP_FROM || process.env.EMAIL_FROM || to,
-      to,
-      subject,
-      text: textBody
-    });
+    // Body for CUSTOMER
+    const customerBody = [
+      `Hi ${order.name},`,
+      '',
+      `Thanks for your order from iSellComics!`,
+      '',
+      `Order ID: ${order.id}`,
+      '',
+      'Items:',
+      ...lines,
+      '',
+      `Subtotal: ${order.subtotal.toFixed(2)} ${order.currency}`,
+      `Shipping: ${order.shipping.toFixed(2)} ${order.currency}`,
+      `Total: ${order.total.toFixed(2)} ${order.currency}`,
+      '',
+      `Payment method: ${order.paymentMethod}`,
+      order.pickup
+        ? 'You selected pickup. Carlos will contact you to arrange a time.'
+        : 'Your order will be prepared for shipping. You will be contacted with details.',
+      '',
+      'If anything looks wrong, just reply to this email.',
+      '',
+      '– iSellComics'
+    ].join('\n');
 
-    console.log('sendOrderEmail: email sent. MessageId:', info.messageId);
+    // Send to YOU
+    if (adminTo) {
+      const infoAdmin = await transporter.sendMail({
+        from,
+        to: adminTo,
+        subject: subjectAdmin,
+        text: adminBody
+      });
+      console.log('sendOrderEmail: admin email sent. MessageId:', infoAdmin.messageId);
+    }
+
+    // Send confirmation to CUSTOMER (if email present)
+    if (customerTo) {
+      const infoCustomer = await transporter.sendMail({
+        from,
+        to: customerTo,
+        subject: subjectCustomer,
+        text: customerBody
+      });
+      console.log('sendOrderEmail: customer email sent. MessageId:', infoCustomer.messageId);
+    }
   } catch (err) {
-    console.error('sendOrderEmail: error while sending email:', err);
+    console.error('sendOrderEmail: error while sending email (non-fatal):', err);
     // DO NOT rethrow – checkout should still succeed
   }
 }
+
 
 
 /* ----------------------------- CORS (allow-list) ---------------------------- */
