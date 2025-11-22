@@ -73,11 +73,13 @@ async function sendOrderEmail(order, lineItems) {
       return;
     }
 
+    // Admin notification target
     const adminTo =
       (process.env.ORDER_NOTIFY_TO || '').trim() ||
       (process.env.SMTP_FROM || '').trim() ||
       (process.env.EMAIL_FROM || '').trim();
 
+    // Customer email (from the checkout form)
     const customerTo = (order.email || '').trim();
 
     if (!adminTo && !customerTo) {
@@ -85,20 +87,23 @@ async function sendOrderEmail(order, lineItems) {
       return;
     }
 
+    // Choose a "from" address that always exists
     const from =
       (process.env.SMTP_FROM || '').trim() ||
       (process.env.EMAIL_FROM || '').trim() ||
       adminTo ||
       customerTo;
 
-    const subjectAdmin = `New iSellComics Order #${order.id} - ${order.name}`;
-    const subjectCustomer = `Your iSellComics order #${order.id}`;
+    // Email subjects
+    const subjectAdmin   = `New iSellComics Order #${order.id} - ${order.name}`;
+    const subjectCustomer = `Your iSellComics Order #${order.id}`;
 
+    // Build line items text
     const lines = lineItems.map(li =>
       `- ${li.title} #${li.issue || ''} x${li.qty} @ ${li.unit_price.toFixed(2)} ${order.currency} = ${li.line_total.toFixed(2)}`
     );
 
-    // Body for YOU (admin)
+    // Admin email body
     const adminBody = [
       `New order received from ${order.name}`,
       '',
@@ -116,8 +121,58 @@ async function sendOrderEmail(order, lineItems) {
       `Shipping: ${order.shipping.toFixed(2)} ${order.currency}`,
       `Total: ${order.total.toFixed(2)} ${order.currency}`,
       '',
-      'You can view this order in the database (orders / order_items tables).'
+      'This order is stored in your database (orders + order_items).'
     ].join('\n');
+
+    // Customer confirmation body
+    const customerBody = [
+      `Thanks for your order, ${order.name}!`,
+      '',
+      `Order ID: ${order.id}`,
+      '',
+      'Items you purchased:',
+      ...lines,
+      '',
+      `Subtotal: ${order.subtotal.toFixed(2)} ${order.currency}`,
+      `Shipping: ${order.shipping.toFixed(2)} ${order.currency}`,
+      `Total: ${order.total.toFixed(2)} ${order.currency}`,
+      '',
+      `Payment Method: ${order.paymentMethod}`,
+      order.pickup 
+        ? 'You selected pickup — we will contact you shortly.'
+        : 'Your items will be shipped soon.',
+      '',
+      'Thank you for supporting iSellComics!',
+    ].join('\n');
+
+    // --- SEND ADMIN EMAIL ---
+    if (adminTo) {
+      await transporter.sendMail({
+        from,
+        to: adminTo,
+        subject: subjectAdmin,
+        text: adminBody
+      });
+      console.log('sendOrderEmail: admin email sent');
+    }
+
+    // --- SEND CUSTOMER EMAIL ---
+    if (customerTo) {
+      await transporter.sendMail({
+        from,
+        to: customerTo,
+        subject: subjectCustomer,
+        text: customerBody
+      });
+      console.log('sendOrderEmail: customer email sent');
+    }
+
+  } catch (err) {
+    console.error('sendOrderEmail: error while sending email:', err);
+    // DO NOT rethrow — checkout must still succeed
+  }
+}
+
 
     // Body for CUSTOMER
     const customerBody = [
