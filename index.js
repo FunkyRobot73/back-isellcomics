@@ -1134,10 +1134,9 @@ app.post('/api/checkout', async (req, res) => {
   }
 });
 
-
 /* --------------------------- Stripe Checkout API ---------------------------- */
 // Creates a Stripe Checkout Session, but does NOT replace /api/checkout.
-// This is the "pay by card" path.
+// This is the "pay by card" path, and uses the SAME shipping rules as /api/checkout.
 app.post('/api/stripe/create-checkout-session', async (req, res) => {
   try {
     const { sessionId, customer } = req.body || {};
@@ -1156,7 +1155,12 @@ app.post('/api/stripe/create-checkout-session', async (req, res) => {
       return res.status(400).json({ error: 'Customer info is incomplete' });
     }
 
-    // Load cart (same logic as /api/checkout)
+    // 🔹 Normalize country & pickup – SAME as /api/checkout
+    const rawCountry = (customer.country || 'CA').toString().trim();
+    const country = rawCountry.toUpperCase();  // "CA", "CANADA", "US", "USA", etc.
+    const pickup = !!customer.pickup;
+
+    // 🔹 Load cart with items + comics (same as /api/checkout)
     const cart = await Cart.findOne({
       where: { session_id: sessionId },
       include: [{
@@ -1191,23 +1195,52 @@ app.post('/api/stripe/create-checkout-session', async (req, res) => {
       return res.status(400).json({ error: 'No valid items in cart' });
     }
 
+    // 🔹 SUBTOTAL
     const subtotal = lineItems.reduce((sum, li) => sum + li.line_total, 0);
-    const shipping = 0; // you can compute real shipping later
+
+    // 🔹 SHIPPING RULES – EXACTLY LIKE /api/checkout
+    let shipping = 0;
+
+    if (pickup) {
+      // Local pickup → no shipping fee
+      shipping = 0;
+    } else {
+      // Delivery
+      if (country === 'CA' || country === 'CANADA') {
+        // Canada
+        if (subtotal >= 99) {
+          shipping = 0;       // Free over $99
+        } else {
+          shipping = 20;      // Flat $20
+        }
+      } else if (country === 'US' || country === 'USA' || country === 'UNITED STATES') {
+        // USA
+        if (subtotal >= 105) {
+          shipping = 0;       // Free over $105
+        } else {
+          shipping = 30;      // Flat $30
+        }
+      } else {
+        // Other countries (if you ever add them)
+        shipping = 40;        // Simple "intl" placeholder
+      }
+    }
+
     const total = subtotal + shipping;
 
-    // Create a pending order in DB (so you see it even if payment fails)
+    // 🔹 Create pending order (same fields as /api/checkout, but paymentMethod = stripe)
     const order = await Order.create({
       session_id: sessionId,
       name: customer.name,
       email: customer.email,
       address: customer.address,
       paymentMethod: 'stripe',
-      pickup: !!customer.pickup,
+      pickup,
       subtotal,
       shipping,
       total,
       currency: 'CAD',
-      status: 'pending_payment' // distinguish from your manual "pending"
+      status: 'pending_payment' // different from manual "pending"
     });
 
     for (const li of lineItems) {
@@ -1223,7 +1256,7 @@ app.post('/api/stripe/create-checkout-session', async (req, res) => {
       });
     }
 
-    // Build Stripe Checkout Session line_items
+    // 🔹 Build Stripe Checkout Session line_items
     const stripeLineItems = lineItems.map(li => ({
       quantity: li.qty,
       price_data: {
@@ -1235,6 +1268,20 @@ app.post('/api/stripe/create-checkout-session', async (req, res) => {
       }
     }));
 
+    // Add shipping as a separate line item if > 0
+    if (shipping > 0) {
+      stripeLineItems.push({
+        quantity: 1,
+        price_data: {
+          currency: 'cad',
+          product_data: {
+            name: 'Shipping'
+          },
+          unit_amount: Math.round(shipping * 100)
+        }
+      });
+    }
+
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       payment_method_types: ['card'],
@@ -1244,20 +1291,21 @@ app.post('/api/stripe/create-checkout-session', async (req, res) => {
         orderId: String(order.id),
         cartSessionId: sessionId
       },
+      // (Optional) collect shipping address in Stripe too:
+      // shipping_address_collection: { allowed_countries: ['CA', 'US'] },
       success_url: 'https://www.isellcomics.ca/checkout-success?orderId=' + order.id + '&session_id={CHECKOUT_SESSION_ID}',
       cancel_url: 'https://www.isellcomics.ca/checkout?canceled=1'
     });
 
     console.log('Stripe session created:', session.id);
-
-    // IMPORTANT: we DO NOT clear the cart here yet.
-    // We'll handle that later once we wire in webhooks or a success callback.
+    // IMPORTANT: DO NOT clear cart here – wait for success/webhook later
     res.status(200).json({ url: session.url });
   } catch (err) {
     console.error('Stripe create-checkout-session error:', err);
     res.status(500).json({ error: 'Failed to create Stripe checkout session', details: err.message });
   }
 });
+
 
 
 /* ---------------------------------- Startup --------------------------------- */
