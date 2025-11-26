@@ -8,7 +8,8 @@ const compression = require('compression');
 const nodemailer = require('nodemailer');
 const OpenAI = require('openai');
 
-
+const Stripe = require('stripe');
+const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
 const config = require('./config');
 const Comic = require('./models/comic');
@@ -1088,6 +1089,131 @@ app.post('/api/checkout', async (req, res) => {
     res.status(500).json({ error: 'Checkout failed', details: err.message });
   }
 });
+
+/* --------------------------- Stripe Checkout API ---------------------------- */
+// Creates a Stripe Checkout Session, but does NOT replace /api/checkout.
+// This is the "pay by card" path.
+app.post('/api/stripe/create-checkout-session', async (req, res) => {
+  try {
+    const { sessionId, customer } = req.body || {};
+    console.log('Stripe create-checkout-session body:', JSON.stringify(req.body, null, 2));
+
+    if (!process.env.STRIPE_SECRET_KEY) {
+      console.error('Stripe error: STRIPE_SECRET_KEY missing');
+      return res.status(500).json({ error: 'Stripe not configured on server' });
+    }
+
+    if (!sessionId) {
+      return res.status(400).json({ error: 'sessionId is required' });
+    }
+
+    if (!customer || !customer.name || !customer.email || !customer.address) {
+      return res.status(400).json({ error: 'Customer info is incomplete' });
+    }
+
+    // Load cart (same logic as /api/checkout)
+    const cart = await Cart.findOne({
+      where: { session_id: sessionId },
+      include: [{
+        model: CartItem,
+        as: 'items',
+        include: [{ model: Comic, as: 'comic' }]
+      }]
+    });
+
+    if (!cart || !cart.items || cart.items.length === 0) {
+      console.warn('Stripe checkout: empty cart for session', sessionId);
+      return res.status(400).json({ error: 'Cart is empty' });
+    }
+
+    const lineItems = cart.items
+      .filter(it => it.comic)
+      .map(it => {
+        const price = Number(it.comic.value || 0);
+        const qty = Number(it.quantity || 1);
+        return {
+          comic_id: it.comic.id,
+          title: it.comic.title,
+          issue: it.comic.issue,
+          qty,
+          unit_price: price,
+          line_total: price * qty,
+          image: it.comic.image
+        };
+      });
+
+    if (lineItems.length === 0) {
+      return res.status(400).json({ error: 'No valid items in cart' });
+    }
+
+    const subtotal = lineItems.reduce((sum, li) => sum + li.line_total, 0);
+    const shipping = 0; // you can compute real shipping later
+    const total = subtotal + shipping;
+
+    // Create a pending order in DB (so you see it even if payment fails)
+    const order = await Order.create({
+      session_id: sessionId,
+      name: customer.name,
+      email: customer.email,
+      address: customer.address,
+      paymentMethod: 'stripe',
+      pickup: !!customer.pickup,
+      subtotal,
+      shipping,
+      total,
+      currency: 'CAD',
+      status: 'pending_payment' // distinguish from your manual "pending"
+    });
+
+    for (const li of lineItems) {
+      await OrderItem.create({
+        order_id: order.id,
+        comic_id: li.comic_id,
+        title: li.title,
+        issue: li.issue,
+        qty: li.qty,
+        unit_price: li.unit_price,
+        line_total: li.line_total,
+        image: li.image
+      });
+    }
+
+    // Build Stripe Checkout Session line_items
+    const stripeLineItems = lineItems.map(li => ({
+      quantity: li.qty,
+      price_data: {
+        currency: 'cad',
+        product_data: {
+          name: `${li.title}${li.issue ? ' #' + li.issue : ''}`
+        },
+        unit_amount: Math.round(li.unit_price * 100) // dollars → cents
+      }
+    }));
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      payment_method_types: ['card'],
+      line_items: stripeLineItems,
+      customer_email: customer.email,
+      metadata: {
+        orderId: String(order.id),
+        cartSessionId: sessionId
+      },
+      success_url: 'https://www.isellcomics.ca/checkout-success?orderId=' + order.id + '&session_id={CHECKOUT_SESSION_ID}',
+      cancel_url: 'https://www.isellcomics.ca/checkout?canceled=1'
+    });
+
+    console.log('Stripe session created:', session.id);
+
+    // IMPORTANT: we DO NOT clear the cart here yet.
+    // We'll handle that later once we wire in webhooks or a success callback.
+    res.status(200).json({ url: session.url });
+  } catch (err) {
+    console.error('Stripe create-checkout-session error:', err);
+    res.status(500).json({ error: 'Failed to create Stripe checkout session', details: err.message });
+  }
+});
+
 
 /* ---------------------------------- Startup --------------------------------- */
 
