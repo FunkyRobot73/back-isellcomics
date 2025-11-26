@@ -989,6 +989,8 @@ app.delete('/api/cart', async (req, res) => {
 
 /* --------------------------------- Checkout --------------------------------- */
 
+/* --------------------------------- Checkout --------------------------------- */
+
 app.post('/api/checkout', async (req, res) => {
   try {
     const { sessionId, customer } = req.body || {};
@@ -1004,6 +1006,12 @@ app.post('/api/checkout', async (req, res) => {
       return res.status(400).json({ error: 'Incomplete customer info' });
     }
 
+    // Normalize country (comes from the checkout form; default to CA)
+    const countryRaw = (customer.country || 'CA').toString().trim();
+    const country = countryRaw.toUpperCase();   // "CA", "US", "USA", etc.
+    const pickup = !!customer.pickup;
+
+    // Load cart with items + comics
     const cart = await Cart.findOne({
       where: { session_id: sessionId },
       include: [{
@@ -1039,17 +1047,47 @@ app.post('/api/checkout', async (req, res) => {
       return res.status(400).json({ error: 'No valid items in cart' });
     }
 
+    // --- SUBTOTAL ---
     const subtotal = lineItems.reduce((sum, li) => sum + li.line_total, 0);
-    const shipping = 0;
+
+    // --- SHIPPING RULES ---
+    let shipping = 0;
+
+    if (pickup) {
+      // Local pickup → no shipping fee
+      shipping = 0;
+    } else {
+      // Delivery
+      if (country === 'CA' || country === 'CANADA') {
+        // Canada
+        if (subtotal >= 99) {
+          shipping = 0;       // Free over $99
+        } else {
+          shipping = 20;      // Flat $20
+        }
+      } else if (country === 'US' || country === 'USA' || country === 'UNITED STATES') {
+        // USA
+        if (subtotal >= 105) {
+          shipping = 0;       // Free over $105
+        } else {
+          shipping = 30;      // Flat $30
+        }
+      } else {
+        // Other countries (if you ever add them)
+        shipping = 40;        // Simple "intl" placeholder
+      }
+    }
+
     const total = subtotal + shipping;
 
+    // --- CREATE ORDER RECORD ---
     const order = await Order.create({
       session_id: sessionId,
       name: customer.name,
       email: customer.email,
-      address: customer.address,
+      address: customer.address,     // still just one string in DB
       paymentMethod: customer.paymentMethod,
-      pickup: !!customer.pickup,
+      pickup,
       subtotal,
       shipping,
       total,
@@ -1057,6 +1095,7 @@ app.post('/api/checkout', async (req, res) => {
       status: 'pending'
     });
 
+    // --- ORDER ITEMS ---
     for (const li of lineItems) {
       await OrderItem.create({
         order_id: order.id,
@@ -1070,17 +1109,22 @@ app.post('/api/checkout', async (req, res) => {
       });
     }
 
+    // --- CLEAR CART ---
     await CartItem.destroy({ where: { cart_id: cart.id } });
     await cart.destroy();
 
+    // Fire-and-forget emails (admin + customer)
     sendOrderEmail(order, lineItems).catch(err => {
       console.error('Checkout: email failed but order is saved:', err);
     });
 
+    // Response back to Angular
     res.status(200).json({
       message: 'Order received!',
       orderId: order.id,
-      total: order.total,
+      subtotal,
+      shipping,
+      total,
       paymentMethod: order.paymentMethod,
       pickup: order.pickup
     });
@@ -1089,6 +1133,7 @@ app.post('/api/checkout', async (req, res) => {
     res.status(500).json({ error: 'Checkout failed', details: err.message });
   }
 });
+
 
 /* --------------------------- Stripe Checkout API ---------------------------- */
 // Creates a Stripe Checkout Session, but does NOT replace /api/checkout.
