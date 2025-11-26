@@ -1,3 +1,5 @@
+// index.js (back.isellcomics.ca)
+
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -6,11 +8,6 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const compression = require('compression');
 const nodemailer = require('nodemailer');
-const OpenAI = require('openai');
-
-const Stripe = require('stripe');
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-
 
 const config = require('./config');
 const Comic = require('./models/comic');
@@ -22,27 +19,8 @@ const Cart = require('./models/cart');
 const CartItem = require('./models/cartItem');
 const Order = require('./models/order');
 const OrderItem = require('./models/orderItem');
-const ClzComic = require('./models/ClzComic');
-// const aiRoutes = require('./routes/ai');
-// const comicPlotRoutes = require('./routes/comicPlot');
 
 const app = express();
-
-// OpenAI client (make sure OPENAI_API_KEY is set in Node app env)
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-// simple publisher normalizer used for matching CLZ records
-function normPub(p) {
-  return (p || '')
-    .toLowerCase()
-    .replace(/comics?/g, '')
-    .replace(/entertainment/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
-}
-
 
 /* ----------------------------- Email transport ------------------------------ */
 
@@ -69,7 +47,13 @@ const transporter = nodemailer.createTransport(
       }
 );
 
-// Helper to email order details (does NOT break the API if it fails)
+/**
+ * Helper to email order details to:
+ *  - YOU (admin)  -> ORDER_NOTIFY_TO / SMTP_FROM / EMAIL_FROM
+ *  - CUSTOMER      -> order.email
+ *
+ * This function NEVER breaks the API: it logs errors but does not throw.
+ */
 async function sendOrderEmail(order, lineItems) {
   try {
     if (!order) {
@@ -77,13 +61,11 @@ async function sendOrderEmail(order, lineItems) {
       return;
     }
 
-    // Admin notification target
     const adminTo =
       (process.env.ORDER_NOTIFY_TO || '').trim() ||
       (process.env.SMTP_FROM || '').trim() ||
       (process.env.EMAIL_FROM || '').trim();
 
-    // Customer email (from the checkout form)
     const customerTo = (order.email || '').trim();
 
     if (!adminTo && !customerTo) {
@@ -91,23 +73,20 @@ async function sendOrderEmail(order, lineItems) {
       return;
     }
 
-    // Choose a "from" address that always exists
     const from =
       (process.env.SMTP_FROM || '').trim() ||
       (process.env.EMAIL_FROM || '').trim() ||
       adminTo ||
       customerTo;
 
-    // Email subjects
-    const subjectAdmin   = `New iSellComics Order #${order.id} - ${order.name}`;
-    const subjectCustomer = `Your iSellComics Order #${order.id}`;
+    const subjectAdmin = `New iSellComics Order #${order.id} - ${order.name}`;
+    const subjectCustomer = `Your iSellComics order #${order.id}`;
 
-    // Build line items text
     const lines = lineItems.map(li =>
       `- ${li.title} #${li.issue || ''} x${li.qty} @ ${li.unit_price.toFixed(2)} ${order.currency} = ${li.line_total.toFixed(2)}`
     );
 
-    // Admin email body
+    // Body for YOU (admin)
     const adminBody = [
       `New order received from ${order.name}`,
       '',
@@ -125,64 +104,14 @@ async function sendOrderEmail(order, lineItems) {
       `Shipping: ${order.shipping.toFixed(2)} ${order.currency}`,
       `Total: ${order.total.toFixed(2)} ${order.currency}`,
       '',
-      'This order is stored in your database (orders + order_items).'
+      'You can view this order in the database (orders / order_items tables).'
     ].join('\n');
 
-    // Customer confirmation body
-    const customerBody = [
-      `Thanks for your order, ${order.name}!`,
-      '',
-      `Order ID: ${order.id}`,
-      '',
-      'Items you purchased:',
-      ...lines,
-      '',
-      `Subtotal: ${order.subtotal.toFixed(2)} ${order.currency}`,
-      `Shipping: ${order.shipping.toFixed(2)} ${order.currency}`,
-      `Total: ${order.total.toFixed(2)} ${order.currency}`,
-      '',
-      `Payment Method: ${order.paymentMethod}`,
-      order.pickup 
-        ? 'You selected pickup — we will contact you shortly.'
-        : 'Your items will be shipped soon.',
-      '',
-      'Thank you for supporting iSellComics!',
-    ].join('\n');
-
-    // --- SEND ADMIN EMAIL ---
-    if (adminTo) {
-      await transporter.sendMail({
-        from,
-        to: adminTo,
-        subject: subjectAdmin,
-        text: adminBody
-      });
-      console.log('sendOrderEmail: admin email sent');
-    }
-
-    // --- SEND CUSTOMER EMAIL ---
-    if (customerTo) {
-      await transporter.sendMail({
-        from,
-        to: customerTo,
-        subject: subjectCustomer,
-        text: customerBody
-      });
-      console.log('sendOrderEmail: customer email sent');
-    }
-
-  } catch (err) {
-    console.error('sendOrderEmail: error while sending email:', err);
-    // DO NOT rethrow — checkout must still succeed
-  }
-}
-
-
-    // Body for CUSTOMER
+    // Body for CUSTOMER (shorter, friendlier)
     const customerBody = [
       `Hi ${order.name},`,
       '',
-      `Thanks for your order from iSellComics!`,
+      'Thanks for your order from iSellComics!',
       '',
       `Order ID: ${order.id}`,
       '',
@@ -193,17 +122,13 @@ async function sendOrderEmail(order, lineItems) {
       `Shipping: ${order.shipping.toFixed(2)} ${order.currency}`,
       `Total: ${order.total.toFixed(2)} ${order.currency}`,
       '',
-      `Payment method: ${order.paymentMethod}`,
-      order.pickup
-        ? 'You selected pickup. Carlos will contact you to arrange a time.'
-        : 'Your order will be prepared for shipping. You will be contacted with details.',
+      'We will contact you shortly about payment and pickup/shipping.',
       '',
-      'If anything looks wrong, just reply to this email.',
-      '',
-      '– iSellComics'
+      'Cheers,',
+      'iSellComics'
     ].join('\n');
 
-    // Send to YOU
+    // Send to admin (if configured)
     if (adminTo) {
       const infoAdmin = await transporter.sendMail({
         from,
@@ -214,7 +139,7 @@ async function sendOrderEmail(order, lineItems) {
       console.log('sendOrderEmail: admin email sent. MessageId:', infoAdmin.messageId);
     }
 
-    // Send confirmation to CUSTOMER (if email present)
+    // Send to customer (if email present)
     if (customerTo) {
       const infoCustomer = await transporter.sendMail({
         from,
@@ -225,13 +150,10 @@ async function sendOrderEmail(order, lineItems) {
       console.log('sendOrderEmail: customer email sent. MessageId:', infoCustomer.messageId);
     }
   } catch (err) {
-    console.error('sendOrderEmail: error while sending email (non-fatal):', err);
+    console.error('sendOrderEmail: error while sending email:', err);
     // DO NOT rethrow – checkout should still succeed
   }
 }
-
-
-
 
 /* ----------------------------- CORS (allow-list) ---------------------------- */
 
@@ -255,7 +177,7 @@ app.use(cors({
   credentials: true
 }));
 
-/* ----------------------------- Global middleware -------------------------- */
+/* ------------------------------ Global middleware --------------------------- */
 
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
@@ -269,9 +191,6 @@ app.use('/public', express.static(path.join(__dirname, 'public'), {
   etag: true,
   immutable: true
 }));
-
-// app.use('/comic-plots', comicPlotRoutes);
-// app.use('/ai', aiRoutes);
 
 /* --------------------------------- Health/Test ------------------------------ */
 
@@ -291,13 +210,19 @@ app.get('/test-email', async (_req, res) => {
     console.log('SMTP_FROM =', process.env.SMTP_FROM);
     console.log('ORDER_NOTIFY_TO =', process.env.ORDER_NOTIFY_TO);
 
-    const to = process.env.ORDER_NOTIFY_TO || process.env.SMTP_FROM || process.env.EMAIL_FROM;
+    const to =
+      (process.env.ORDER_NOTIFY_TO || '').trim() ||
+      (process.env.SMTP_FROM || '').trim() ||
+      (process.env.EMAIL_FROM || '').trim();
+
     if (!to) {
       return res.status(500).json({ error: 'No ORDER_NOTIFY_TO / SMTP_FROM / EMAIL_FROM configured' });
     }
 
     const info = await transporter.sendMail({
-      from: process.env.SMTP_FROM || process.env.EMAIL_FROM || to,
+      from: (process.env.SMTP_FROM || '').trim() ||
+            (process.env.EMAIL_FROM || '').trim() ||
+            to,
       to,
       subject: 'Test email from iSellComics backend',
       text: 'If you are reading this, SMTP is working for back.isellcomics.ca.'
@@ -363,12 +288,10 @@ const upload = multer({ storage });
 
 /* --------------------------------- Comics ----------------------------------- */
 
-// All comics – ONLY published comics
+// All comics
 app.get('/comics', async (_req, res) => {
   try {
-    const rows = await Comic.findAll({
-      where: { is_published: 1 }
-    });
+    const rows = await Comic.findAll();
     res.status(200).json(rows);
   } catch (err) {
     console.error('GET /comics error:', err);
@@ -376,19 +299,7 @@ app.get('/comics', async (_req, res) => {
   }
 });
 
-// Admin: ALL comics (published + unpublished)
-app.get('/comics-all', async (_req, res) => {
-  try {
-    const rows = await Comic.findAll();
-    res.status(200).json(rows);
-  } catch (err) {
-    console.error('GET /comics-all error:', err);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-
-// Single comic by ID (can return unpublished too)
+// Single comic by ID
 app.get('/comic/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
@@ -401,177 +312,11 @@ app.get('/comic/:id', async (req, res) => {
   }
 });
 
-/* --------- CLZ plot lookup & AI plot generation routes --------- */
-
-// GET /comics/:id/clz-plot – pull raw plot from CLZ table
-app.get('/comics/:id/clz-plot', async (req, res) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) return res.status(400).json({ error: 'Invalid comic ID' });
-
-    const comic = await Comic.findByPk(id);
-    if (!comic) {
-      return res.status(404).json({ error: 'Comic not found' });
-    }
-
-    const issue = comic.issue || '';
-    const year  = comic.year  || '';
-    const pub   = normPub(comic.publisher);
-
-    if (!issue || !year || !pub) {
-      return res.status(404).json({ error: 'Not enough data to match CLZ record' });
-    }
-
-    const candidates = await ClzComic.findAll({
-      where: { issue, year },
-      limit: 20,
-    });
-
-    if (!candidates.length) {
-      return res.status(404).json({ error: 'No CLZ candidates found' });
-    }
-
-    let best = null;
-    let bestScore = -1;
-
-    for (const cand of candidates) {
-      const candPub = normPub(cand.publisher);
-      let score = 0;
-
-      if (candPub === pub) score += 3;
-      if (candPub.includes(pub) || pub.includes(candPub)) score += 2;
-
-      const cTitle  = (cand.title || '').toLowerCase();
-      const myTitle = (comic.title || '').toLowerCase();
-      if (cTitle && myTitle && (cTitle.includes(myTitle) || myTitle.includes(cTitle))) {
-        score += 1;
-      }
-
-      if (score > bestScore) {
-        bestScore = score;
-        best = cand;
-      }
-    }
-
-    if (!best || !best.story) {
-      return res.status(404).json({ error: 'No CLZ story / plot found for this comic' });
-    }
-
-    res.json({
-      plot: best.story,
-      clzTitle: best.title,
-      clzPublisher: best.publisher,
-      clzYear: best.year,
-    });
-  } catch (err) {
-    console.error('GET /comics/:id/clz-plot error:', err);
-    res.status(500).json({ error: 'CLZ plot lookup failed' });
-  }
-});
-
-// SAFE AI REQUEST WITH RETRY
-async function safeOpenAIRequest(client, requestOptions, maxRetries = 3) {
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      return await client.responses.create(requestOptions);
-    } catch (err) {
-      if (err.status === 429) {
-        const waitMs = 1500 * (attempt + 1);
-        console.log(`Rate limit hit. Retry ${attempt + 1}/${maxRetries} in ${waitMs}ms`);
-        await new Promise(res => setTimeout(res, waitMs));
-        continue;
-      }
-
-      if (err.status >= 500) {
-        const waitMs = 1000 * (attempt + 1);
-        console.log(`Server error from OpenAI. Retry in ${waitMs}ms`);
-        await new Promise(res => setTimeout(res, waitMs));
-        continue;
-      }
-
-      throw err;
-    }
-  }
-
-  throw new Error("OpenAI request failed after retries.");
-}
-
-// AI PLOT ROUTE (left as you had it – variable names etc.)
-app.post("/comics/:id/ai-plot", async (req, res) => {
-  const comicId = req.params.id;
-
-  try {
-    // NOTE: uses Comicbook here in your original code.
-    // Leaving this section unchanged so we don't surprise you.
-    const comic = await Comicbook.findByPk(comicId);
-    if (!comic) {
-      return res.status(404).json({ error: "Comic not found" });
-    }
-
-    const prompt = `
-Write a short plot summary for this comic book:
-
-Title: ${comic.title}
-Issue: ${comic.issue}
-Year: ${comic.year}
-Publisher: ${comic.publisher}
-Characters: ${comic.characters}
-Writer: ${comic.writer}
-Artist: ${comic.artist}
-Key info: ${comic.key}
-Description: ${comic.description}
-
-Write in 2–4 sentences, clear and simple.
-    `.trim();
-
-    const aiRes = await safeOpenAIRequest(openaiClient, {
-      model: "gpt-4o-mini",
-      input: prompt
-    });
-
-    const plot = aiRes.output_text || aiRes.output_text?.[0] || aiRes?.data || "";
-
-    if (!plot) {
-      return res.status(500).json({ error: "AI returned empty response" });
-    }
-
-    comic.plot = plot.trim();
-    await comic.save();
-
-    res.json({
-      id: comicId,
-      plot: comic.plot,
-      status: "updated"
-    });
-
-  } catch (err) {
-    console.error("POST /comics/:id/ai-plot error:", err);
-
-    if (err.status === 429) {
-      return res.status(429).json({
-        error: "OpenAI rate limit exceeded. Try again in a minute."
-      });
-    }
-
-    res.status(500).json({
-      error: "AI plot generation failed",
-      details: err.message
-    });
-  }
-});
-
-/* --------------------------------------------------------------------------- */
-
-// Comics by publisher – ONLY published
+// Comics by publisher
 app.get('/comics/publisher/:name', async (req, res) => {
   try {
     const name = req.params.name;
-    const rows = await Comic.findAll({
-      where: {
-        publisher: name,
-        is_published: 1
-      }
-    });
+    const rows = await Comic.findAll({ where: { publisher: name } });
     res.status(200).json(rows);
   } catch (err) {
     console.error('GET /comics/publisher/:name error:', err);
@@ -579,12 +324,11 @@ app.get('/comics/publisher/:name', async (req, res) => {
   }
 });
 
-// Recently updated comics – ONLY published
+// Recently updated comics
 app.get('/comics/recent-updated', async (req, res) => {
   try {
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 8, 1), 50);
     const rows = await Comic.findAll({
-      where: { is_published: 1 },
       order: [['updatedAt', 'DESC']],
       limit,
       attributes: ['id', 'title', 'issue', 'publisher', 'image', 'value', 'updatedAt']
@@ -618,11 +362,7 @@ app.post('/addcomics', upload.single('image'), async (req, res) => {
       slabbed: req.body.slabbed,
       isbn: req.body.isbn,
       qty: req.body.qty,
-      volume: req.body.volume,
-      plot: req.body.plot,
-      variant: req.body.variant,
-      coverArtist: req.body.coverArtist
-      // is_published will default to 0 in DB unless you set it explicitly here
+      volume: req.body.volume
     };
 
     const result = await Comic.create(new_comic);
@@ -644,8 +384,7 @@ app.patch('/comics/:id', async (req, res) => {
 
     const updatableFields = [
       'title','issue','type','year','publisher','condition','grade','key',
-      'description','short','characters','writer','artist','value','slabbed','isbn','qty','volume',
-      'plot', 'variant', 'coverArtist', 'is_published'
+      'description','short','characters','writer','artist','value','slabbed','isbn','qty','volume'
     ];
 
     let changed = false;
@@ -677,8 +416,7 @@ app.patch('/comics/:id/image', upload.single('image'), async (req, res) => {
 
     const updatableFields = [
       'title','issue','type','year','publisher','condition','grade','key',
-      'description','short','characters','writer','artist','value','slabbed','isbn','qty','volume',
-      'plot', 'variant', 'coverArtist', 'is_published'
+      'description','short','characters','writer','artist','value','slabbed','isbn','qty','volume'
     ];
     for (const field of updatableFields) {
       if (req.body[field] !== undefined) comic[field] = req.body[field];
@@ -693,49 +431,6 @@ app.patch('/comics/:id/image', upload.single('image'), async (req, res) => {
     res.status(500).json({ error: 'Server error updating comic' });
   }
 });
-
-// Sitemap for published comics only
-// Dynamic sitemap for published comics only
-app.get('/sitemap-comics.xml', async (_req, res) => {
-  try {
-    const comics = await Comic.findAll({
-      where: { is_published: 1 },
-      attributes: ['id', 'updatedAt']
-    });
-
-    let urls = '';
-
-    for (const c of comics) {
-      const lastmod = c.updatedAt
-        ? new Date(c.updatedAt).toISOString().split('T')[0]
-        : '2025-01-01';
-
-      urls += `
-  <url>
-    <loc>https://www.isellcomics.ca/comic/${c.id}</loc>
-    <lastmod>${lastmod}</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
-  </url>`;
-    }
-
-    const xml =
-`<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${urls}
-</urlset>`;
-
-    res.header('Content-Type', 'application/xml');
-    res.status(200).send(xml);
-
-  } catch (err) {
-    console.error('Error generating sitemap-comics:', err);
-    res.status(500).send('Error generating sitemap');
-  }
-});
-
-
-
 
 /* -------------------------------- Companies --------------------------------- */
 
@@ -1038,84 +733,6 @@ app.delete('/api/cart', async (req, res) => {
 
 /* --------------------------------- Checkout --------------------------------- */
 
-// -------------------------------- Stripe: create Checkout Session --------------------------------
-app.post('/api/stripe/create-checkout-session', async (req, res) => {
-  try {
-    const { sessionId, customer } = req.body || {};
-    console.log('Stripe create-checkout-session body:', JSON.stringify(req.body, null, 2));
-
-    if (!sessionId) {
-      return res.status(400).json({ error: 'sessionId is required' });
-    }
-
-    if (!customer || !customer.email) {
-      return res.status(400).json({ error: 'Customer info (including email) is required' });
-    }
-
-    // Load the cart for this session, same idea as /api/checkout
-    const cart = await Cart.findOne({
-      where: { session_id: sessionId },
-      include: [{
-        model: CartItem,
-        as: 'items',
-        include: [{ model: Comic, as: 'comic' }]
-      }]
-    });
-
-    if (!cart || !cart.items || cart.items.length === 0) {
-      console.warn('Stripe create-checkout-session: empty cart for session', sessionId);
-      return res.status(400).json({ error: 'Cart is empty' });
-    }
-
-    // Build line items from cart
-    const lineItems = cart.items
-      .filter(it => it.comic)
-      .map(it => {
-        const price = Number(it.comic.value || 0);
-        const qty = Number(it.quantity || 1);
-        return {
-          title: it.comic.title,
-          issue: it.comic.issue,
-          qty,
-          unit_price: price
-        };
-      });
-
-    if (lineItems.length === 0) {
-      return res.status(400).json({ error: 'No valid items in cart' });
-    }
-
-    // Convert to Stripe's line_items format
-    const stripeLineItems = lineItems.map(li => ({
-      price_data: {
-        currency: 'cad',
-        product_data: {
-          name: `${li.title}${li.issue ? ' #' + li.issue : ''}`
-        },
-        unit_amount: Math.round(li.unit_price * 100) // CAD → cents
-      },
-      quantity: li.qty
-    }));
-
-    const checkoutSession = await stripe.checkout.sessions.create({
-      mode: 'payment',
-      payment_method_types: ['card'],
-      line_items: stripeLineItems,
-      customer_email: customer.email,
-      // Simple success / cancel URLs – we'll handle DB order after success
-      success_url: 'https://www.isellcomics.ca/checkout-stripe-complete',
-      cancel_url: 'https://www.isellcomics.ca/checkout'
-    });
-
-    console.log('Stripe session created:', checkoutSession.id);
-    res.json({ checkoutUrl: checkoutSession.url });
-  } catch (err) {
-    console.error('Stripe create-checkout-session error:', err);
-    res.status(500).json({ error: 'Stripe session failed', details: err.message });
-  }
-});
-
-
 app.post('/api/checkout', async (req, res) => {
   try {
     const { sessionId, customer } = req.body || {};
@@ -1167,7 +784,7 @@ app.post('/api/checkout', async (req, res) => {
     }
 
     const subtotal = lineItems.reduce((sum, li) => sum + li.line_total, 0);
-    const shipping = 0;
+    const shipping = 0;  // TODO: add real shipping logic later
     const total = subtotal + shipping;
 
     const order = await Order.create({
@@ -1200,6 +817,7 @@ app.post('/api/checkout', async (req, res) => {
     await CartItem.destroy({ where: { cart_id: cart.id } });
     await cart.destroy();
 
+    // fire-and-forget emails (admin + buyer)
     sendOrderEmail(order, lineItems).catch(err => {
       console.error('Checkout: email failed but order is saved:', err);
     });
