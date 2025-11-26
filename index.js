@@ -6,7 +6,11 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const compression = require('compression');
 const nodemailer = require('nodemailer');
-const OpenAI = require('openai');  
+const OpenAI = require('openai');
+
+const Stripe = require('stripe');
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
 
 const config = require('./config');
 const Comic = require('./models/comic');
@@ -1032,6 +1036,84 @@ app.delete('/api/cart', async (req, res) => {
 });
 
 /* --------------------------------- Checkout --------------------------------- */
+
+// -------------------------------- Stripe: create Checkout Session --------------------------------
+app.post('/api/stripe/create-checkout-session', async (req, res) => {
+  try {
+    const { sessionId, customer } = req.body || {};
+    console.log('Stripe create-checkout-session body:', JSON.stringify(req.body, null, 2));
+
+    if (!sessionId) {
+      return res.status(400).json({ error: 'sessionId is required' });
+    }
+
+    if (!customer || !customer.email) {
+      return res.status(400).json({ error: 'Customer info (including email) is required' });
+    }
+
+    // Load the cart for this session, same idea as /api/checkout
+    const cart = await Cart.findOne({
+      where: { session_id: sessionId },
+      include: [{
+        model: CartItem,
+        as: 'items',
+        include: [{ model: Comic, as: 'comic' }]
+      }]
+    });
+
+    if (!cart || !cart.items || cart.items.length === 0) {
+      console.warn('Stripe create-checkout-session: empty cart for session', sessionId);
+      return res.status(400).json({ error: 'Cart is empty' });
+    }
+
+    // Build line items from cart
+    const lineItems = cart.items
+      .filter(it => it.comic)
+      .map(it => {
+        const price = Number(it.comic.value || 0);
+        const qty = Number(it.quantity || 1);
+        return {
+          title: it.comic.title,
+          issue: it.comic.issue,
+          qty,
+          unit_price: price
+        };
+      });
+
+    if (lineItems.length === 0) {
+      return res.status(400).json({ error: 'No valid items in cart' });
+    }
+
+    // Convert to Stripe's line_items format
+    const stripeLineItems = lineItems.map(li => ({
+      price_data: {
+        currency: 'cad',
+        product_data: {
+          name: `${li.title}${li.issue ? ' #' + li.issue : ''}`
+        },
+        unit_amount: Math.round(li.unit_price * 100) // CAD → cents
+      },
+      quantity: li.qty
+    }));
+
+    const checkoutSession = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      payment_method_types: ['card'],
+      line_items: stripeLineItems,
+      customer_email: customer.email,
+      // Simple success / cancel URLs – we'll handle DB order after success
+      success_url: 'https://www.isellcomics.ca/checkout-stripe-complete',
+      cancel_url: 'https://www.isellcomics.ca/checkout'
+    });
+
+    console.log('Stripe session created:', checkoutSession.id);
+    res.json({ checkoutUrl: checkoutSession.url });
+  } catch (err) {
+    console.error('Stripe create-checkout-session error:', err);
+    res.status(500).json({ error: 'Stripe session failed', details: err.message });
+  }
+});
+
 
 app.post('/api/checkout', async (req, res) => {
   try {
